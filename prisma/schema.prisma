@@ -1,0 +1,498 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ ENUMS ============
+
+enum Role {
+  SUPERADMIN
+  KEPALA
+  ANGGOTA
+}
+
+enum AccountType {
+  BANK
+  TUNAI
+  EWALLET
+}
+
+enum Ownership {
+  BERSAMA
+  PRIBADI
+}
+
+enum Visibility {
+  BERSAMA
+  PRIBADI_TERBUKA
+  PRIBADI_TERTUTUP
+}
+
+enum TransactionType {
+  MASUK
+  KELUAR
+  TRANSFER
+}
+
+enum TransactionSource {
+  MANUAL
+  WA
+  RECURRING
+}
+
+enum CategoryType {
+  PEMASUKAN
+  PENGELUARAN
+}
+
+enum GoalStatus {
+  AKTIF
+  TERCAPAI
+  DIBATALKAN
+}
+
+enum DebtType {
+  KPR
+  KENDARAAN
+  PAYLATER
+  PINJAMAN
+  KOPERASI
+  LAINNYA
+}
+
+enum Plan {
+  FREE
+  PRO
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+}
+
+enum OtpPurpose {
+  REGISTER
+  RESET_PASSWORD
+  BIND_WA
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+}
+
+enum InvoiceStatus {
+  UNPAID
+  PAID
+  CANCELLED
+}
+
+// ============ TABLES ============
+
+model Household {
+  id                String   @id @default(cuid())
+  nama              String
+  tanggalGajian     Int      @default(25) // 1-31
+  levelTransparansi String   @default("BERSAMA")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime?
+
+  users                User[]
+  accounts             Account[]
+  categories           Category[]
+  budgetPeriods        BudgetPeriod[]
+  transactions         Transaction[]
+  goals                Goal[]
+  debts                Debt[]
+  recurringTransactions RecurringTransaction[]
+  parseRules           ParseRule[]
+  pendingWaMessages    PendingWaMessage[]
+  subscription         Subscription?
+  invites              HouseholdInvite[]
+  notificationLogs     NotificationLog[]
+  auditLogs            AuditLog[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  householdId  String
+  username     String   @unique
+  passwordHash String
+  waNumber     String?
+  nama         String
+  role         Role     @default(ANGGOTA)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  deletedAt    DateTime?
+
+  household    Household        @relation(fields: [householdId], references: [id])
+  waBindings   WaBinding[]
+  transactions Transaction[]
+  goalContributions GoalContribution[]
+  otpTokens    OtpToken[]
+  auditLogs    AuditLog[]
+
+  @@index([householdId])
+}
+
+model HouseholdInvite {
+  id          String       @id @default(cuid())
+  householdId String
+  kode        String       @unique
+  waNumber    String
+  expiresAt   DateTime
+  status      InviteStatus @default(PENDING)
+  createdAt   DateTime     @default(now())
+
+  household Household @relation(fields: [householdId], references: [id])
+
+  @@index([householdId])
+}
+
+model WaBinding {
+  id         String    @id @default(cuid())
+  userId     String
+  waNumber   String
+  verified   Boolean   @default(false)
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, waNumber])
+  @@index([waNumber])
+}
+
+model Account {
+  id           String        @id @default(cuid())
+  householdId  String
+  nama         String
+  tipe         AccountType
+  kepemilikan  Ownership     @default(BERSAMA)
+  ownerId      String?
+  saldoAwal    Int           @default(0)
+  saldo        Int           @default(0) // derived
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  deletedAt    DateTime?
+
+  household    Household     @relation(fields: [householdId], references: [id])
+  transactions Transaction[] @relation("AccountTransactions")
+  transactionsAsDestination Transaction[] @relation("AccountDestination")
+  goals        Goal[]
+
+  @@index([householdId])
+}
+
+model Category {
+  id          String       @id @default(cuid())
+  householdId String?
+  nama        String
+  tipe        CategoryType
+  icon        String?
+  isTemplate  Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  deletedAt   DateTime?
+
+  household            Household?            @relation(fields: [householdId], references: [id])
+  budgetAllocations    BudgetAllocation[]
+  transactions         Transaction[]
+  recurringTransactions RecurringTransaction[]
+  parseRules           ParseRule[]
+
+  @@index([householdId])
+}
+
+model BudgetPeriod {
+  id          String   @id @default(cuid())
+  householdId String
+  mulai       DateTime
+  selesai     DateTime
+  createdAt   DateTime @default(now())
+
+  household    Household          @relation(fields: [householdId], references: [id])
+  allocations  BudgetAllocation[]
+
+  @@index([householdId])
+}
+
+model BudgetAllocation {
+  id             String   @id @default(cuid())
+  budgetPeriodId String
+  categoryId     String
+  jumlah         Int      @default(0)
+  rollover       Boolean  @default(false)
+  rolloverMasuk  Int      @default(0)
+  scope          Ownership @default(BERSAMA)
+  ownerId        String?
+  createdAt      DateTime @default(now())
+
+  budgetPeriod BudgetPeriod @relation(fields: [budgetPeriodId], references: [id])
+  category     Category     @relation(fields: [categoryId], references: [id])
+
+  @@unique([budgetPeriodId, categoryId])
+}
+
+model Transaction {
+  id             String            @id @default(cuid())
+  householdId    String
+  tipe           TransactionType
+  jumlah         Int
+  tanggal        DateTime
+  accountId      String
+  accountTujuanId String?
+  categoryId     String?
+  catatan        String?
+  createdById    String
+  visibility     Visibility        @default(BERSAMA)
+  source         TransactionSource @default(MANUAL)
+  version        Int               @default(1)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  deletedAt      DateTime?
+
+  household   Household  @relation(fields: [householdId], references: [id])
+  account     Account    @relation("AccountTransactions", fields: [accountId], references: [id])
+  accountTujuan Account? @relation("AccountDestination", fields: [accountTujuanId], references: [id])
+  category    Category?  @relation(fields: [categoryId], references: [id])
+  createdBy   User       @relation(fields: [createdById], references: [id])
+  goalContribution GoalContribution?
+  debtPayment      DebtPayment?
+
+  @@index([householdId, tanggal])
+  @@index([accountId])
+  @@index([categoryId])
+}
+
+model Goal {
+  id             String     @id @default(cuid())
+  householdId    String
+  nama           String
+  targetJumlah   Int
+  targetTanggal  DateTime
+  accountId      String?
+  scope          Ownership  @default(BERSAMA)
+  ownerId        String?
+  terkumpul      Int        @default(0) // derived
+  status         GoalStatus @default(AKTIF)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  deletedAt      DateTime?
+
+  household    Household          @relation(fields: [householdId], references: [id])
+  account      Account?           @relation(fields: [accountId], references: [id])
+  contributions GoalContribution[]
+
+  @@index([householdId])
+}
+
+model GoalContribution {
+  id            String    @id @default(cuid())
+  goalId        String
+  transactionId String?
+  userId        String
+  jumlah        Int
+  createdAt     DateTime  @default(now())
+
+  goal        Goal         @relation(fields: [goalId], references: [id])
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+  user        User         @relation(fields: [userId], references: [id])
+
+  @@unique([goalId, transactionId])
+}
+
+model Debt {
+  id               String   @id @default(cuid())
+  householdId      String
+  nama             String
+  jenis            DebtType
+  pokokAwal        Int
+  sisaPokok        Int
+  cicilanBulanan   Int
+  tanggalJatuhTempo Int    // day of month 1-31
+  tenor            Int
+  sisaTenor        Int
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  deletedAt        DateTime?
+
+  household Household     @relation(fields: [householdId], references: [id])
+  payments  DebtPayment[]
+
+  @@index([householdId])
+}
+
+model DebtPayment {
+  id            String    @id @default(cuid())
+  debtId        String
+  transactionId String?
+  jumlah        Int
+  tanggal       DateTime
+  createdAt     DateTime  @default(now())
+
+  debt        Debt         @relation(fields: [debtId], references: [id])
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+}
+
+model RecurringTransaction {
+  id                String    @id @default(cuid())
+  householdId       String
+  categoryId        String?
+  accountId         String
+  jumlah            Int
+  deskripsi         String
+  frekuensi         String    // MONTHLY, WEEKLY, YEARLY
+  tanggalBerikutnya DateTime
+  autoDraft         Boolean   @default(false)
+  isActive          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  household Household @relation(fields: [householdId], references: [id])
+  category  Category? @relation(fields: [categoryId], references: [id])
+
+  @@index([householdId])
+}
+
+model ParseRule {
+  id          String   @id @default(cuid())
+  householdId String
+  keyword     String
+  categoryId  String
+  hitCount    Int      @default(1)
+  createdAt   DateTime @default(now())
+
+  household Household @relation(fields: [householdId], references: [id])
+  category  Category  @relation(fields: [categoryId], references: [id])
+
+  @@unique([householdId, keyword])
+  @@index([householdId])
+}
+
+model PendingWaMessage {
+  id           String   @id @default(cuid())
+  householdId  String
+  userId       String
+  waMessageId  String
+  originalText String
+  candidates   Json     // [{categoryId, confidence}]
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+
+  household Household @relation(fields: [householdId], references: [id])
+
+  @@index([householdId])
+  @@index([expiresAt])
+}
+
+model Subscription {
+  id               String             @id @default(cuid())
+  householdId      String             @unique
+  plan             Plan               @default(FREE)
+  status           SubscriptionStatus @default(TRIAL)
+  trialEndsAt      DateTime?
+  currentPeriodEnd DateTime?
+  durasiBulan      Int                @default(1)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  household Household @relation(fields: [householdId], references: [id])
+  invoices  Invoice[]
+}
+
+model Invoice {
+  id             String        @id @default(cuid())
+  subscriptionId String
+  periode        String
+  jumlah         Int
+  diskon         Int           @default(0)
+  jumlahAkhir    Int
+  status         InvoiceStatus @default(UNPAID)
+  dueDate        DateTime
+  createdAt      DateTime      @default(now())
+
+  subscription  Subscription      @relation(fields: [subscriptionId], references: [id])
+  redemptions   CouponRedemption[]
+}
+
+model Coupon {
+  id              String    @id @default(cuid())
+  kode            String    @unique
+  nominalDiskon   Int
+  paketTerkunci   String?
+  kuota           Int?
+  terpakai        Int       @default(0)
+  berlakuSampai   DateTime?
+  createdAt       DateTime  @default(now())
+
+  redemptions CouponRedemption[]
+}
+
+model CouponRedemption {
+  id        String   @id @default(cuid())
+  couponId  String
+  invoiceId String
+  createdAt DateTime @default(now())
+
+  coupon  Coupon  @relation(fields: [couponId], references: [id])
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@unique([couponId, invoiceId])
+}
+
+model OtpToken {
+  id        String     @id @default(cuid())
+  userId    String?
+  waNumber  String
+  codeHash  String
+  purpose   OtpPurpose
+  expiresAt DateTime
+  attempts  Int        @default(0)
+  createdAt DateTime   @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([waNumber, purpose])
+  @@index([expiresAt])
+}
+
+model NotificationLog {
+  id          String   @id @default(cuid())
+  householdId String?
+  userId      String?
+  channel     String
+  recipient   String
+  message     String
+  status      String
+  createdAt   DateTime @default(now())
+
+  @@index([householdId])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  householdId String
+  userId      String
+  aksi        String
+  entitas     String
+  entitasId   String
+  before      Json?
+  after       Json?
+  createdAt   DateTime @default(now())
+
+  household Household @relation(fields: [householdId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@index([householdId, createdAt])
+}
